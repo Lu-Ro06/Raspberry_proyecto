@@ -1,0 +1,117 @@
+# Manual de Estudio Técnico y de Operación
+## Sistema de Telemetría Vehicular en Tiempo Real (MedalSync Telemetry)
+
+Este manual compendia la documentación de arquitectura, el modelado electrónico de hardware, los fundamentos de redes y la lógica algorítmica del proyecto de telemetría vehicular. Está diseñado como guía de validación técnica y bitácora de ingeniería.
+
+---
+
+## 1. Arquitectura General del Sistema
+
+El sistema implementa una arquitectura distribuida **Cliente-Servidor (Client-Server)** de tipo local e híbrida (sensores físicos y simulación controlada de alta fidelidad). Los datos recolectados y procesados en la **Raspberry Pi** se exponen mediante sockets TCP a través de un servicio web ligero para su consumo inmediato desde un navegador de escritorio.
+
+[ Sensor HC-SR04 ] --(GPIO/Digital)--> [ Raspberry Pi ] <-- (Acelerómetro Virtual / Mock)
+|
+(Servidor Flask - Puerto 5000)
+|
+(Red Local / Cable Ethernet)
+v
+[ Laptop / Navegador Chrome ]
+
+
+### Flujo de Datos Continuo:
+1. **Capa de Hardware/Simulación:** La Raspberry Pi interactúa con los pines GPIO para medir el nivel de combustible y ejecuta un hilo de simulación matemática para los vectores de movimiento.
+2. **Capa de Transporte Local (API):** Flask empaqueta las variables crudas en un objeto estructurado de tipo **JSON (JavaScript Object Notation)** en el endpoint `/datos`.
+3. **Capa de Presentación (UI):** El navegador web ejecuta un script asíncrono con el método `fetch` en un bucle cíclico activo (**Polling**) cada 800ms, actualizando dinámicamente el DOM (Document Object Model) sin necesidad de recargar la página.
+
+---
+
+## 2. Especificaciones de Hardware y Teoría Eléctrica
+
+### A. Sensor Ultrasónico (HC-SR04) - Nivel de Combustible
+El sensor calcula el volumen del contenedor basándose en el tiempo de vuelo de una onda sónica (Time-of-Flight). 
+
+* **Mecánica del pulso:** Se envía un pulso de activación (Trigger) de $10\,\mu\text{s}$ para obligar al emisor a lanzar una ráfaga ultrasónica de 40 kHz. El pin Echo se eleva a un estado alto ($5\text{ V}$) y se mantiene así hasta que el receptor detecta la onda de retorno.
+* **Cálculo Físico de Distancia:** Sabiendo que la velocidad del sonido en el aire es de $\approx 343\text{ m/s}$ ($34,300\text{ cm/s}$), y que el tiempo capturado representa la ida y la vuelta del trayecto, aplicamos la siguiente ecuación de física:
+$$\text{Distancia} = \frac{\text{Tiempo de Eco} \times 34,300}{2}$$
+
+#### El Divisor de Tensión (Protección Crítica):
+Los pines GPIO de la Raspberry Pi funcionan con lógica de $3.3\text{ V}$. Conectar el pin Echo de $5\text{ V}$ directo a la placa dañaría los canales digitales permanentemente. Se acopla un divisor de tensión utilizando resistencias de $1\text{ k}\Omega$ ($R_1$) y $2\text{ k}\Omega$ ($R_2$).
+
+La tensión de salida corregida que recibe la Raspberry Pi se calcula con la Ley de Ohm mediante la fórmula:
+$$V_{\text{out}} = V_{\text{in}} \times \left( \frac{R_2}{R_1 + R_2} \right)$$
+$$V_{\text{out}} = 5\text{ V} \times \left( \frac{2000\,\Omega}{1000\,\Omega + 2000\,\Omega} \right) = 3.33\text{ V}$$
+
+* ** TRIG:** Conectado al **GPIO 23** (Pin Físico 16).
+* ** ECHO:** Conectado a la resistencia de $1\text{ k}\Omega$.
+* **Punto de Lectura de la Pi:** Conectado en el nodo central del puente de resistencias al **GPIO 24** (Pin Físico 18).
+* **GND:** Conectado a la línea de tierra común (Pin Físico 6).
+
+### B. Acelerómetro (MPU6050) - Estado de Movimiento
+Durante las pruebas de estrés del bus físico I2C, un cortocircuito en las pistas de la protoboard saturó las líneas de datos, provocando que el comando `i2cdetect -y 1` mostrara todas las direcciones del bus ocupadas simultáneamente. 
+
+Para salvaguardar la integridad de la Raspberry Pi y asegurar la continuidad del proyecto, se desacopló el procesamiento I2C y se sustituyó por una **simulación controlada (Mocking)** en el backend. 
+* **Validación de Energía:** El sensor físico se mantiene montado con sus cables de alimentación conectados a los pines seguros de la Raspberry Pi (**VCC a 3.3V** en el Pin Físico 1 y **GND** en el Pin Físico 6). El LED verde encendido es la validación visual de que la etapa de potencia está operativa.
+
+---
+
+## 3. Configuración del Entorno de Red y Sistema (Linux)
+
+### A. Enrutamiento del Puente de Red (Ethernet)
+Para comunicar la laptop y la Raspberry Pi sin infraestructura de red externa, se comparte la conexión de red de la computadora. Esto levanta un adaptador virtual que asigna a la Raspberry Pi la dirección IP fija `192.168.137.88`.
+
+* **Comprobación de conectividad básica (ICMP):** Desde la consola de la laptop se ejecuta un diagnóstico de eco para validar que las tarjetas de red se reconocen:
+```bash
+ping 192.168.137.88
+B. Liberación de Sockets Bloqueados (Sockets Zombi)
+Al interrumpir abruptamente el script de ejecución en Python con el comando Ctrl + C, el sistema operativo Linux puede mantener el puerto 5000 retenido en un estado zombi (no liberado). Al intentar reiniciar el programa, Chrome arrojará el error ERR_CONNECTION_REFUSED.
+
+Para matar el proceso oculto que tiene secuestrado el puerto TCP, se ejecuta:
+
+Bash
+sudo fuser -k 5000/tcp
+4. Algoritmia Avanzada y Lógica del Software
+A. Calibración y Mapeo del Contenedor de 7 cm
+El sensor HC-SR04 posee una zona muerta de aproximación de entre 0 y 2 cm donde las lecturas saturan el transductor. Para medir con precisión un contenedor de 7 cm, el backend escala los rangos de la siguiente manera:
+
+Límite Mínimo (Tanque Lleno / 100%): Configurado a 2.5 cm, otorgando un margen de seguridad acústica.
+
+Límite Máximo (Tanque Vacío / 0%): Configurado a 7.0 cm, correspondiente al fondo físico del envase.
+
+Cualquier medida intermedia se procesa mediante una interpolación matemática acotada entre 0 y 100 para evitar desbordamientos numéricos.
+
+B. Filtro Antifallas de Concurrencia
+Para mitigar las lecturas nulas (-1) causadas cuando el tráfico de la red web interrumpe momentáneamente el conteo de microsegundos de los pines físicos, el backend implementa un bucle de 3 reintentos consecutivos con micropausas de estabilidad de 20ms antes de dar por perdida una muestra.
+
+C. Algoritmo Analítico de Detección de Fugas
+La detección de anomalías en el combustible no depende de un valor fijo, sino de la velocidad de vaciado con respecto al tiempo (aproximación discreta de una derivada temporal):
+
+Velocidad de Vaciado= 
+Tiempo Transcurrido
+Porcentaje Anterior−Porcentaje Actual
+​
+ 
+Si la velocidad calculada es mayor o igual al 5.0% de caída por segundo, el sistema concluye una pérdida crítica de fluido, activando la bandera de fuga en el payload JSON para disparar la alerta visual en la interfaz de usuario.
+
+5. Guía de Despliegue e Inspección en la Evaluación
+Inspección Eléctrica: Verificar que las resistencias del divisor de tensión estén firmes y compartan la misma línea de tierra (GND).
+
+Arranque del Backend: Ejecutar el servidor web en la terminal de la Raspberry Pi:
+
+Bash
+python3 sensores.py
+Despliegue del Panel: Acceder desde Chrome en la laptop utilizando la dirección IP:
+
+Plaintext
+[http://192.168.137.88:5000](http://192.168.137.88:5000)
+Prueba de Campo: Introducir el sensor en el contenedor de 7 cm. Al retirar el sensor bruscamente del contenedor (simulando una caída rápida de nivel), comprobar que la interfaz despliega de inmediato el banner rojo intermitente: ⚠️ ¡ALERTA CRÍTICA: ANOMALÍA / FUGA DE COMBUSTIBLE!.
+
+***
+
+### 🛠️ Pasos para guardarlo en tu Raspberry Pi:
+1. Abre tu terminal de Linux en la Pi.
+2. Escribe el comando: `nano README.md`
+3. Copia todo el bloque de texto gris de arriba y pégalo dentro de la terminal.
+4. Presiona **`Ctrl + O`** (luego dale **Enter** para guardar los cambios).
+5. Sal del editor presionando **`Ctrl + X`**.
+
+¡Listo! Cuando ejecutes tus comandos de `git add .`, `git commit` y `git push`, GitHub leerá este archivo automáticamente y creará una portada de presentación para tu proyecto.
