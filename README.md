@@ -1,83 +1,121 @@
-Markdown# Manual de Estudio Técnico y de Operación
-## Sistema de Telemetría Vehicular en Tiempo Real (MedalSync)
+# Manual de Estudio Técnico y de Operación: MedalSync Telemetry
+
+Este repositorio compendia la especificación técnica, el modelado electrónico, la configuración del entorno de red en Linux y el código fuente completo del sistema de telemetría vehicular en tiempo real desarrollado para el proyecto **MedalSync**.
 
 ---
 
 ## 1. Arquitectura General del Sistema
-El proyecto es un sistema de telemetría embebido híbrido (físico/simulado) que recopila datos de sensores en una **Raspberry Pi** y los transmite a una interfaz web en tiempo real a través de una arquitectura **Client-Server** local basada en **HTTP/JSON**.
 
-[ Sensor HC-SR04 ] --(GPIO/Digital)--> [ Raspberry Pi ] <-- (Lógica Mock por Software)|(Servidor Flask - Puerto 5000)|(Red Local / Cable)v[ Laptop / Navegador Chrome ]
+El proyecto implementa una arquitectura **Cliente-Servidor (Client-Server)** de tipo local e híbrida. Centraliza la recolección de métricas físicas mediante sensores directos y lógica de simulación paralela en una **Raspberry Pi**, exponiendo los datos a través de una API REST que es consumida en tiempo real por una interfaz gráfica de usuario.
+
+[ Sensor HC-SR04 ] --(GPIO/Digital)--> [ Raspberry Pi ] <-- (Acelerómetro Virtual / Mock)
+|
+(Servidor Flask - Puerto 5000)
+|
+(Red Local / Cable Ethernet)
+v
+[ Laptop / Navegador Chrome ]
+
+
+### Dinámica del Flujo de Datos:
+1. **Muestreo:** La Raspberry Pi ejecuta un ciclo continuo de lectura digital sobre los pines GPIO asignados al sensor ultrasónico y calcula de forma paralela hilos virtuales para las variables de movimiento.
+2. **Serialización (JSON):** El framework Flask empaqueta las lecturas crudas del hardware en un objeto JSON estructurado bajo el endpoint protegido `/datos`.
+3. **Renderizado síncrono (Polling):** El cliente en el navegador ejecuta consultas asíncronas HTTP (`fetch`) cada 800ms, alterando la estructura del DOM de forma dinámica para reflejar los cambios al instante sin refrescar la ventana.
+
 ---
 
-## 2. Diagramas y Especificaciones de Hardware
+## 2. Modelado de Hardware y Teoría Eléctrica
 
 ### A. Sensor Ultrasónico (HC-SR04) - Medición de Combustible
-* **Principio de Funcionamiento:** Emite una ráfaga de alta frecuencia (40 kHz) y mide el tiempo que tarda el eco en regresar tras chocar con la superficie del agua.
-* **Cálculo de Distancia:** La velocidad del sonido es de $\approx 343\text{ m/s}$ ($34,300\text{ cm/s}$). La distancia se calcula con la fórmula:
-$$\text{Distancia} = \frac{\text{Tiempo de Eco} \times 34,300}{2}$$
+El dispositivo realiza un cálculo indirecto de distancia miendo el tiempo de vuelo de una ráfaga de ondas mecánicas de alta frecuencia (40 kHz).
 
-#### Conexión Física y Divisor de Tensión:
-Dado que el pin **ECHO** del sensor emite $5\text{ V}$ y los pines GPIO de la Raspberry Pi operan a un máximo de $3.3\text{ V}$, se implementa un **divisor de tensión** con resistencias de $1\text{ k}\Omega$ ($R_1$) y $2\text{ k}\Omega$ ($R_2$) para proteger la integridad de la placa.
+* **Funcionamiento:** Se envía un pulso de disparo (Trigger) de 10 microsegundos para activar los transductores. El pin Echo se eleva a nivel alto (5 V) y permanece así hasta que el eco de la onda acústica regresa tras chocar con la superficie del líquido.
+* **Fórmula Física Aplicada:** Sabiendo que la velocidad de propagación del sonido en el aire es de aproximadamente 343 m/s (34,300 cm/s), se implementa la ecuación de movimiento rectilíneo uniforme, dividiendo entre dos debido al recorrido de ida y vuelta de la onda:
 
-* **VCC:** Conectado al **Pin Físico 2 o 4** ($5\text{ V}$).
-* **TRIG:** Conectado directo al **GPIO 23** (**Pin Físico 16**).
-* **ECHO:** Va a la fila de la protoboard donde inicia la resistencia de $1\text{ k}\Omega$.
-* **Punto de Lectura (GPIO 24 / Pin Físico 18):** Se conecta exactamente en el nodo central donde se unen la resistencia de $1\text{ k}\Omega$ y la de $2\text{ k}\Omega$.
-* **GND:** La pata libre de la resistencia de $2\text{ k}\Omega$ y el pin GND del sensor van a la línea de tierra común (**Pin Físico 6, 9 o 14**).
+  Distancia = (Tiempo de Eco * 34,300) / 2
 
-### B. Sensor de Movimiento (MPU6050) - Estado del Vehículo
-* **Aviso de simulación:** Tras experimentar fallas críticas en el bus físico de datos I2C (donde un cortocuito inundaba todas las direcciones lógicas), el hardware se desacopló y se sustituyó por un **Mock virtual por software** de alta fidelidad, asegurando la continuidad operativa del sistema.
-* **Conexión de Respaldo Física (Solo alimentación para validación visual de energía):**
-  * **VCC:** Conectado al **Pin Físico 1** ($3.3\text{ V}$).
-  * **GND:** Conectado a la línea de tierra común (**Pin Físico 6**).
-  * *Nota: El LED verde encendido valida que la etapa de potencia del sensor se encuentra energizada de manera correcta.*
+#### Divisor de Tensión de Seguridad:
+Los pines de lectura de la Raspberry Pi toleran un máximo estricto de 3.3 V. Dado que el pin Echo entrega un pulso de salida de 5 V, se introduce un arreglo resistivo con valores de 1 kΩ (R1) y 2 kΩ (R2) en serie hacia Tierra.
+
+La caída de tensión en el punto de medición digital se modela con la Ley de Ohm:
+
+  Vout = Vin * ( R2 / (R1 + R2) )
+  Vout = 5 V * ( 2000 Ω / (1000 Ω + 2000 Ω) ) = 3.33 V
+
+* **TRIG:** Enlazado al pin **GPIO 23** (Pin Físico 16).
+* **ECHO:** Dirigido al extremo superior de la resistencia de 1 kΩ.
+* **Punto de Entrada Digital (Pi):** Conectado en el nodo central entre ambas resistencias al **GPIO 24** (Pin Físico 18).
+* **GND:** Retornado a la barra de tierra de referencia común (Pin Físico 6).
+
+### B. Acelerómetro (MPU6050) - Detección de Movimiento
+* **Aislamiento por Software (Mocking):** Tras identificar cortocircuitos por falsos contactos en las láminas de la protoboard que provocaban la inundación total del bus I2C (llenando la herramienta `i2cdetect` de registros falsos), se optó por desacoplar las lecturas de los pines de datos para evitar daños permanentes en la Pi. El comportamiento tridimensional (X, Y, Z) se emula mediante un generador pseudoaleatorio de precisión en el backend.
+* **Etapa de Potencia:** Se mantiene el componente energizado de manera segura conectando **VCC a 3.3V** (Pin Físico 1) y **GND** (Pin Físico 6) para validar que el circuito de filtrado y el regulador interno del sensor operan correctamente, evidenciado por el LED verde encendido.
 
 ---
 
-## 3. Configuración del Entorno de Red y Sistema (Linux/Ubuntu)
+## 3. Entorno de Red y Comandos de Administración (Linux)
 
-Para que la laptop pueda visualizar la telemetría sin depender de una red Wi-Fi externa, se utiliza un puente de red por cable Ethernet mediante el protocolo **ICMP/IP**.
+### A. Segmentación de Red Local (Ethernet)
+Al enlazar la laptop con la Raspberry Pi a través de un cable de red y compartir la conexión, se genera una subred privada local donde la Pi toma la dirección IP estática `192.168.137.88`.
 
-### A. Comprobación de Conectividad (Desde la Laptop)
-Para verificar la visibilidad directa hacia la Raspberry Pi a través del segmento compartido `192.168.137.xx`, se ejecuta en la consola de Windows:
-```cmd
-ping 192.168.137.88
-B. Administración de Puertos Bloqueados en LinuxCuando el servidor de Flask se cierra de forma abrupta (Ctrl + C), el puerto lógico de comunicación puede quedar retenido en estado zombi. Para liberar por la fuerza el socket TCP y solucionar el error ERR_CONNECTION_REFUSED, se ejecuta:Bashsudo fuser -k 5000/tcp
-4. Guía de Despliegue Paso a Paso (Checklist para el Examen)Verificar Conexiones: Valida físicamente que las resistencias de $1\text{ k}\Omega$ y $2\text{ k}\Omega$ hagan puente limpio en la protoboard y que el cable de lectura vaya al Pin Físico 18.Encendido del Servidor: Ejecuta en la consola de la Raspberry Pi: python3 sensores.pyAcceso Remoto: Abre Google Chrome en tu laptop e ingresa a la URL: http://192.168.137.88:5000Prueba de Validación de Combustible: Introduce el sensor ultrasónico en tu bote de 7 cm. Al simular un vaciado rápido sacando el sensor del bote de golpe, la interfaz web activará instantáneamente la Alerta Roja Intermitente de Fuga.
----
+* **Prueba de Conectividad (ICMP):** Para validar que el canal físico está abierto y hay comunicación bilateral antes de arrancar la aplicación, se ejecuta desde la computadora:
+  ```bash
+  ping 192.168.137.88
+B. Liberación de Sockets Retenidos (Procesos Zombi)
+Si el script de Python se interrumpe de forma abrupta mediante la combinación Ctrl + C, el núcleo de Linux puede demorar en liberar el puerto de comunicación 5000. Al intentar reiniciar la telemetría, el sistema colapsará dando un error de dirección en uso. Para matar el hilo colgado de raíz, se ejecuta en la terminal de la Pi:
 
-### 2. Servidor de Red: `sensores.py`
-Ejecuta: `nano sensores.py` y pega el código backend robusto calibrado a tus 7 cm:
+Bash
+sudo fuser -k 5000/tcp
+4. Lógica Algorítmica del Backend
+A. Calibración y Mapeo del Contenedor de 7 cm
+El sensor ultrasónico presenta una zona muerta de saturación si los objetos se aproximan a menos de 2 cm de los cilindros. Para el tanque de 7 cm de profundidad, las variables se ajustan analíticamente así:
 
-```python
+Límite de Seguridad Inferior (100% Volumen): Establecido en 2.5 cm de distancia para prevenir lecturas erráticas.
+
+Límite Físico Superior (0% Volumen): Establecido en 7.0 cm, correspondiente al fondo del envase.
+
+Cualquier medida intermedia se procesa mediante una interpolación matemática acotada entre 0 y 100 para evitar desbordamientos numéricos.
+
+B. Filtro Estabilizador de Concurrencia
+Para mitigar la pérdida de muestras o valores nulos (-1) provocados cuando el procesador central atiende solicitudes del servidor web y desatiende el conteo de microsegundos de los pines físicos, el algoritmo implementa un ciclo de 3 reintentos de lectura consecutivos con retardos de estabilización de 20ms antes de descartar la medición.
+
+C. Algoritmo Analítico de Detección de Fugas
+La lógica de seguridad no busca un nivel bajo fijo, sino que calcula la rapidez con la que el líquido desciende en el tiempo (derivada discreta con respecto al tiempo):
+
+Velocidad de Vaciado = (Porcentaje Anterior - Porcentaje Actual) / Tiempo Transcurrido
+
+Si el diferencial de volumen es negativo y la velocidad calculada es igual o mayor a una tasa de cambio del 5.0% de volumen por segundo, el backend interpreta una pérdida destructiva de fluido, activando la alerta en la respuesta JSON.
+
+5. Código de Red del Servidor: sensores.py
+Python
 import time
-import random  # Utilizado para el módulo de simulación del acelerómetro
+import random
 from flask import Flask, render_template, jsonify
 import RPi.GPIO as GPIO
 
-# --- CONFIGURACIÓN DE PARÁMETROS DEL CONTENEDOR (CALIBRADO A 7 CM) ---
-DIST_MINIMA = 2.5   # cm cuando el líquido está al máximo (100% Lleno)
-DIST_MAXIMA = 7.0   # cm cuando el tanque está vacío en el fondo (0% Vacío)
-UMBRAL_MOVIMIENTO = 0.8  # Límite de aceleración para considerar que el auto avanza
-UMBRAL_FUGA = 5.0   # % de caída por segundo requerido para disparar la alerta
+# --- PARÁMETROS DE CALIBRACIÓN DEL CONTENEDOR (7 CM) ---
+DIST_MINIMA = 2.5   # Tanque al 100% (2.5 cm de distancia al sensor)
+DIST_MAXIMA = 7.0   # Tanque al 0% (7.0 cm de distancia al fondo)
+UMBRAL_MOVIMIENTO = 0.8  
+UMBRAL_FUGA = 5.0   # Caída del 5% por segundo dispara la alerta
 
 app = Flask(__name__)
 
-# Configuración inicial de Pines de la Raspberry Pi
+# Configuración Inicial de Pines GPIO
 TRIG = 23
 ECHO = 24
-GPIO.setmode(GPIO.BCM)  # Modo de direccionamiento por canal broadcom
+GPIO.setmode(GPIO.BCM)
 GPIO.setup(TRIG, GPIO.OUT)
 GPIO.setup(ECHO, GPIO.IN)
 
-# Variables globales de estado para el cálculo analítico de fuga
+# Variables globales para el análisis temporal de fuga
 ultimo_porcentaje = None
 ultima_lectura_tiempo = time.time()
 
 def medir_distancia():
-    """Envía un pulso ultrasónico y calcula el tiempo de respuesta del eco."""
+    """Envía un pulso de ultrasonido y calcula el tiempo de respuesta del eco."""
     GPIO.output(TRIG, False)
-    time.sleep(0.1)  # Ventana de tiempo esencial para limpiar ecos remanentes en 7cm
+    time.sleep(0.1)  # Limpieza de ecos remanentes dentro del contenedor
     GPIO.output(TRIG, True)
     time.sleep(0.00001)  # Pulso de disparo de 10 microsegundos
     GPIO.output(TRIG, False)
@@ -111,7 +149,6 @@ def datos():
     """API Endpoint que procesa, empaqueta y retorna la telemetría en JSON."""
     global ultimo_porcentaje, ultima_lectura_tiempo
     
-    # Estructura base del Payload JSON
     datos_payload = {
         "distancia": -1,
         "porcentaje": 0,
@@ -120,7 +157,7 @@ def datos():
         "caida_rapida": False
     }
 
-    # Filtro de tolerancia a fallos por ráfagas de red (3 Reintentos)
+    # Filtro tolerante a fallos (3 reintentos)
     dist = -1
     for _ in range(3):
         dist = medir_distancia()
@@ -128,30 +165,29 @@ def datos():
             break
         time.sleep(0.02)
 
-    # Procesamiento de telemetría del tanque de gasolina
+    # Procesamiento del volumen del contenedor
     if dist != -1:
         datos_payload["distancia"] = dist
-        # Interpolación lineal para mapear centímetros a porcentaje de volumen
+        # Interpolación lineal matemática
         pct = (1 - (dist - DIST_MINIMA) / (DIST_MAXIMA - DIST_MINIMA)) * 100
         pct = max(0, min(100, int(pct)))
         datos_payload["porcentaje"] = pct
 
-        # Algoritmo matemático para detección de fugas (Derivada con respecto al tiempo)
+        # Algoritmo temporal para detección de fugas
         ahora = time.time()
         if ultimo_porcentaje is not None:
-            tiempo_transcurrido =超 = ahora - ultima_lectura_tiempo
+            tiempo_transcurrido = ahora - ultima_lectura_tiempo
             if tiempo_transcurrido > 0:
-                # Calcula la tasa de cambio porcentual por segundo
                 velocidad_vaciado = (ultimo_porcentaje - pct) / tiempo_transcurrido
                 if velocidad_vaciado >= UMBRAL_FUGA:
                     datos_payload["caida_rapida"] = True
 
-        # Actualización segura del histórico de volumen
+        # Actualización de estados históricos
         if ultimo_porcentaje is None or pct <= ultimo_porcentaje or (pct - ultimo_porcentaje) > 10:
             ultimo_porcentaje = pct
             ultima_lectura_tiempo = ahora
 
-    # --- ENTORNO MOCK: SIMULACIÓN DE SEGURIDAD DEL ACELERÓMETRO ---
+    # --- MÓDULO MOCK: SIMULACIÓN DE SEGURIDAD DEL ACELERÓMETRO ---
     sim_x = random.uniform(-1.5, 1.5)
     sim_y = random.uniform(-1.5, 1.5)
     sim_z = random.uniform(9.0, 10.0)
@@ -163,15 +199,16 @@ def datos():
     return jsonify(datos_payload)
 
 if __name__ == '__main__':
-    # Lanzamiento del servidor escuchando en todas las interfaces de red (0.0.0.0)
     app.run(host='0.0.0.0', port=5000, threaded=True)
-3. Interfaz Gráfica: templates/index.htmlCrea la carpeta de vistas si no existe (mkdir -p templates), ejecuta nano templates/index.html y pega la interfaz completa:HTML<!DOCTYPE html>
+6. Interfaz de Usuario Gráfica: templates/index.html
+HTML
+<!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Panel de Telemetría Vehicular</title>
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="[https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4](https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4)"></script>
 </head>
 <body class="bg-slate-900 text-white font-sans min-h-screen p-6">
 
@@ -209,7 +246,7 @@ if __name__ == '__main__':
             <div>
                 <h2 class="text-xl font-bold text-slate-400 mb-6 uppercase tracking-wider">Estado del Vehículo</h2>
                 <div class="flex justify-center items-center h-40">
-                    <div id="badge-estado" class="bg-slate-950 border border-slate-700 px-8 py-6 rounded-3xl text-center shadow-lg transition-all duration-300">
+                    <div id="badge-estado" class="bg-slate-950 border border-slate-700 px-8 py-6 rounded-3xl text-center shadow-lg duration-300">
                         <span id="texto-estado" class="text-3xl font-black tracking-wide text-slate-500 uppercase">Auto Detenido</span>
                     </div>
                 </div>
@@ -224,13 +261,13 @@ if __name__ == '__main__':
     </main>
 
     <script>
-        // Polling activo a 800ms
+        // Sincronización asíncrona mediante Polling Activo a 800ms
         async function actualizarDashboard() {
             try {
                 const response = await fetch('/datos');
                 const data = await response.json();
 
-                // 1. Renderizado de Combustible e indicador dinámico de color
+                // 1. Renderizado Dinámico del Nivel de Combustible
                 if (data.distancia !== -1) {
                     document.getElementById('distancia-texto').innerText = `Distancia: ${data.distancia.toFixed(2)} cm`;
                     document.getElementById('porcentaje-texto').innerText = `${data.porcentaje}%`;
@@ -245,7 +282,7 @@ if __name__ == '__main__':
                     document.getElementById('distancia-texto').innerText = "Error HC-SR04";
                 }
 
-                // 2. Control de visibilidad del banner de fuga (Estrategia DOM de clases)
+                // 2. Control de la Alerta Crítica de Fuga en el DOM
                 const alerta = document.getElementById('alerta-fuga');
                 if (data.caida_rapida) {
                     alerta.classList.remove('hidden');
@@ -253,7 +290,7 @@ if __name__ == '__main__':
                     alerta.classList.add('hidden');
                 }
 
-                // 3. Renderizado de vectores de movimiento y alteración de estilos del badge
+                // 3. Renderizado de Vectores Tridimensionales y Modificación de Tarjetas
                 document.getElementById('eje-x').innerText = data.acelerometro.x.toFixed(2);
                 document.getElementById('eje-y').innerText = data.acelerometro.y.toFixed(2);
                 document.getElementById('eje-z').innerText = data.acelerometro.z.toFixed(2);
@@ -272,7 +309,7 @@ if __name__ == '__main__':
                 }
 
             } catch (error) {
-                console.error("Error en la sincronización del fetch:", error);
+                console.error("Fallo en la comunicación con la API de telemetría:", error);
             }
         }
 
@@ -280,3 +317,13 @@ if __name__ == '__main__':
     </script>
 </body>
 </html>
+7. Guía de Despliegue e Inspección en la Evaluación
+Inspección Eléctrica: Verificar que las resistencias del divisor de tensión estén firmes en la protoboard y compartan la misma línea de tierra (GND).
+
+Arranque del Backend: Ejecutar el servidor web en la terminal de la Raspberry Pi:
+
+Bash
+python3 sensores.py
+Despliegue del Panel: Acceder desde Chrome en la laptop utilizando la dirección IP del puente Ethernet: http://192.168.137.88:5000
+
+Prueba de Campo: Introducir el sensor en el contenedor de 7 cm. Al retirar el sensor bruscamente del contenedor (simulando una caída rápida de nivel), comprobar que la interfaz despliega de inmediato el banner de advertencia parpadeante.
